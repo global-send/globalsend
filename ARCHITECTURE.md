@@ -155,6 +155,35 @@ Additional threat mitigations from payload encryption:
 - Relay/rendezvous compromise: relays never see plaintext file/chunk contents; only encrypted frames and minimal metadata (sizes, approximate counts) are exposed.
 - Compromised transport endpoints: TLS termination points do not have AEAD keys; only endpoints that complete X25519 handshake and SAS verification can decrypt payloads.
 
+## Passkeys, WebAuthn, and Cross‑Device Authentication
+
+Passkeys are central to globalsend's UX and security model. They are used both to protect device private material and — when the user chooses — to authenticate with the global service (Supabase) to enable global mode. Key points:
+
+- Platform support: native frontends should use each platform's biometric/passkey APIs where available. The web frontend uses WebAuthn for platform authenticators. All platforms expose an API in `globalsend-crypto` to derive or unlock local key material from passkeys.
+- Data protection role: a passkey unlocks the device's long‑term identity private key or is used to derive a key‑encryption‑key (KEK). Private keys stored on disk are encrypted with the KEK; the user only enters a PIN or uses biometric once per session (or per policy) to unlock the KEK.
+- Authentication role: if a user opts into global mode, the passkey can be used to authenticate to Supabase (WebAuthn or platform flow). Authentication is distinct from payload encryption — but the same passkey can serve both roles to provide a simpler UX.
+- Cross‑device provisioning: when a user wants to add a new device (e.g., phone → desktop), the following flow is used:
+   1. Initiator (desktop) displays a QR or short numeric code representing a one‑time session offer and a short session fingerprint.
+ 2. Responder (mobile) scans the QR and performs a rendezvous handshake with the initiator via LAN or the global rendezvous.
+ 3. Devices perform an authenticated ECDH (ephemeral X25519) and the initiator wraps the device private material (or a per‑session AEAD key) under a KEK derived from the responder's public key and the initiator's passkey‑authorized secret.
+ 4. The wrapped key is sent over the established encrypted channel. The responder uses its passkey to unwrap and persist the private material, optionally adding its own biometric/webauthn method as an additional unlocking method.
+
+This model allows a user to provision new devices with a single scan and minimal prompts while preserving end‑to‑end encryption guarantees. Each device may add multiple authenticators (biometric, PIN, platform authenticator via WebAuthn) that can unlock the same private material via key wrapping (encrypted blobs) without exposing raw private keys.
+
+- WebAuthn specifics: the web client registers a credential via WebAuthn and derives or obtains a wrapping/unlocker credential. The web flow is global‑mode oriented (because browsers normally cannot act as arbitrary LAN peers without special handling), but a scoped code + WebAuthn pairing flow can allow the web client to participate in cross‑device provisioning.
+
+- Recovery & multi‑auth: users can add multiple authenticators on different devices. Recovery strategies and backup/restore flows are explicitly documented and require explicit user consent because they increase attack surface. Device removal revokes the stored wrapped keys and updates server‑side rendezvous records when applicable.
+
+### Public links and shareable tokens
+
+Global mode supports optional public links: the user can create a public share link for a sendlet. By default all sendlets are end‑to‑end encrypted and private; a public link is an explicit, deliberate action.
+
+- Public link design: to preserve the principle that content is never leaked to the relay in plaintext, a public link contains a reference to the encrypted object plus an embedded decryption token (a symmetric AEAD key or token). The public link encodes both the object ID (on the relay) and the AEAD key required to decrypt. Anyone with the link can download and decrypt the object.
+- Tradeoffs: public links weaken confidentiality (anyone with link can access). They are opt‑in and should be rate‑limited, TTL‑limited, and revocable. The UI must warn users about the security implications.
+- Local public sharing: technically possible (e.g., a device could start a short‑lived HTTP share on LAN), but this is not surfaced by default since LAN devices already have implicit reachability; if implemented it will follow the same encrypted‑token design.
+
+These passkey and cross‑device patterns are designed to keep user interaction minimal while enabling secure cross‑device key transfer and flexible authenticators.
+
 ## Discovery
 
 - LAN: mDNS/Bonjour (advertise `_globalsend._udp` and `_globalsend._quic` service records). Include capabilities and a session ID.
